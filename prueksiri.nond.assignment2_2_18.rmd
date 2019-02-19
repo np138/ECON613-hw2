@@ -1,0 +1,526 @@
+---
+title: "ECON 613 Assignment 2"
+author: "Nond Prueksiri"
+date: "February 18, 2019 (Updated) "
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+\fontsize{10}{10}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Excercise 1     Data Creation
+
+#### Reset the work environment
+
+```{r Data Creation}
+rm(list = ls())
+
+```
+
+#### Set seed to 100 for reproduction purposes
+
+```{r 1.1 setseed}
+set.seed(100)
+```
+
+## Create data as directed 
+
+```{r 1.2 Data Creation}
+x1  <- runif(10000, min = 1, max = 3)
+x2  <- rgamma(10000, shape = 3, scale = 2)
+x3  <- rbinom(10000, size = 1, prob = 0.3)
+eps <- rnorm(10000, 2, 1)
+
+```
+
+## Create the variable y
+
+```{r 1.4 y varaible}
+y <- 0.5 + 1.2*x1 - 0.9*x2 + 0.1*x3 + eps
+hist(y)
+```
+
+## Create dummy variable
+
+```{r 1.5 dummy}
+ydum <- as.numeric(y > mean(y))
+summary(ydum)
+```
+
+### Create dataframe and matrices for further uses
+```{r 1.6 matrix and data}
+# Dataframe for discrete choices
+dat <- cbind(ydum, x1, x2, x3)
+dat <- as.data.frame(dat)
+
+# X Matrix for OLS
+mx <- as.matrix(cbind(1, x1, x2, x3))
+X <- as.matrix(mx)
+
+# Y Matrix for OLS
+my <- as.matrix(y)
+
+# YDUM Matrix for discrete choices
+mydum <- as.matrix(ydum)
+Y <- as.matrix(mydum)
+
+```
+
+# Excercise 2    OLS
+
+## Correlation between Y and X1
+
+```{r 2.1 corr}
+cor(y, x1)
+```
+Note that cor(y,x1) is not 1.2 because the range of correlation is between -1 and 1, moreover,
+the fact that (from excercise 1) Y = 0.5 + 1.2X1 + ... indicates that cov(Y,X1)/var(X) = 1.2 not the correlation.
+
+## Estimate the regression of Y on X where X = (1,X1,X2,X3)
+
+Using the OLS, let beta = vector of coefficients, mx = matrix of (1, X1, X2, X3), my = vector of Y
+The calculation is beta = inv(X'X)(X'Y)
+
+```{r 2.2 ols estimate}
+betaols <- solve(t(mx)%*%mx)%*%t(mx)%*%my
+
+row.names(betaols) <- c("intercept", "x1", "x2", "x3")
+
+colnames(betaols) <- c("y")
+
+print(t(betaols))
+```
+
+## Estimate standard errors using OLS  
+
+Compute variance-covariance matrix by OLS formulas;
+sigma^2 times inverse(X'X), diagonal elements of the matrix are the standard errors
+
+```{r 2.3 SE by OLS}
+# Create res = residual vector
+res <- as.matrix(y-betaols[1]-betaols[2]*mx[,2]-betaols[3]*mx[,3]-betaols[4]*mx[,4])
+
+# Assign value of n and k
+n <- nrow(my)
+k <- ncol(mx)
+
+# Compute the Variance-covariance matrix VCV
+VCV <- 1/(n-k) * as.numeric(t(res)%*%res) * solve(t(mx)%*%mx)
+
+# Obtain SE from diagonal elements
+se <- sqrt(diag(VCV))
+
+# Report the output
+ols_output <- cbind(betaols, se)
+colnames(ols_output) <- c("Coefficient", "Standard Error")
+row.names(ols_output) <- c("intercept", "x1", "x2", "x3")
+print(ols_output)
+```
+
+## Estimate standard errors using bootstrap  
+
+Create ols and bootse function for estimating SE by bootstrap
+
+``` {r 2.4 SE by Bootstrap}
+# Create OLS estimation function
+ols <- function(my,mx) {
+       beta <- solve(t(mx)%*%mx)%*%t(mx)%*%my
+       }
+
+# Create bootse function
+boot <- as.numeric()
+
+# Function bootse(xmatrix,ymatrix, number of replications)
+bootse <- function(mx, my, rep) {
+            
+            # Loop of replication to rep times
+            for (i in 1:rep) {
+              
+            ## draw sample with replacement (n = 10,000)
+            boot_x <- mx[sample(nrow(mx), replace = TRUE), ]
+            boot_y <- my[sample(nrow(my), replace = TRUE), ]
+            
+            ## estimate OLS coeff. for each samples drew, bind to the matrix
+            boot   <- cbind(boot, ols(boot_y, boot_x))
+            }
+          
+          # Matrix of OLS results ('rep' rows), calculate SE for each coefficient
+          boot <- t(boot)
+          boot_se <- apply(boot, 2, sd)
+          
+          # Report the result
+          names(boot_se) <- c("intercept", "x1", "x2", "x3")
+          print(boot_se)
+        }
+```
+
+### Calculate SE using 49 replication
+
+```{r 2.5 boot49}
+bootse(mx, my, 49)
+```
+
+### Calculate SE using 499 replication
+
+```{r 2.6 boot499}
+bootse(mx, my, 499)
+```
+  
+
+# Excercise 3    Numerical Optimization
+
+## Write down the likelihood funtion of probit
+
+Create dataframe to use for likelihood function
+
+```{r 3.1 dat}
+dat <- as.data.frame(ydum)
+dat <- cbind(dat, 1, x1, x2, x3)
+```
+
+Create log-likelihood funtion of probit
+
+```{r 3.2 log-likelihood}
+probit_ll <- function (beta, df = dat) {
+    
+    # Calculate the vector xb = (X)(beta)
+    xb <- as.matrix(dat[ ,2:5]) %*% beta
+    
+    # Fit xb into CDF of normal distribution
+    p <- pnorm(xb)
+    
+    # Get the log-likelihood function
+    logl <- sum((1 - dat[,1]) * log(1 - p) + dat[,1] * log(p))
+    return(logl)
+  }
+
+
+```
+
+## Implement the steepest ascent optimization algorithm
+
+Create function that returns first approximation of gradient for likelihood function
+
+```{r 3.3 gradient}
+
+probit_grd <- function(beta, df = dat , l = probit_ll, d = 0.001, start = 0) {
+    if(old_ll == 0) {old_ll  <- l(beta)}
+  
+    # Create default gradient vector  
+    grd <- matrix(nrow = 4, ncol = 1)
+
+    # Calculate first approximation of each x    
+    for (i in 1:4) {
+      beta_grd <- beta
+    
+      # Calculate f(x+d)
+      beta_grd[i,1] <- beta[i,1]+d
+      pos_ll <- l(beta_grd)
+    
+      # Calculate f(x-d)
+      beta_grd[i,1] <- beta[i,1]-d
+      neg_ll <- l(beta_grd)
+    
+      # Calculate the midpoint (f(x+d) - f(X-d))/2d
+      grd[i,1] <- (pos_ll - neg_ll)/ 2*d
+      }
+    return(grd)
+  }
+```
+
+Write algorithm for the steepest ascent optimization
+
+```{r 3.4 optimization, warning=FALSE}
+
+# Set initial value for searching
+beta_new <- as.matrix(c(0,0,0,0))
+
+# Calculate the log-likelihood for the initial value
+new_ll <- probit_ll(beta_new)
+
+# Set level of optimization
+tolerance <- 1      # Level of tolerance difference in ll between iteration
+alpha     <- 0.1    # Scaling parameter  
+maxiter   <- 1000    # Maximum of iterations regardless of tolerance
+
+# Iteration
+for (i in 1:maxiter) {
+    beta_old <- beta_new      # Assign initial value of beta in iteration
+    old_ll   <- new_ll        # Assign initial value of ll in iteration
+    beta_new <- beta_old + alpha * probit_grd(beta_old , start = old_ll) 
+                                # Ascent to increase ll
+  if(is.na(beta_new))  {beta_new <- beta_old}
+    new_ll   <- probit_ll(beta_new) # Calculate for new ll
+  if(is.na(new_ll))  {new_ll <- old_ll}
+    
+  if(abs(new_ll - old_ll) <= tolerance) { # Break loop once reaches tol
+    break
+  }
+  iteration <- i    # report number of iterations
+}
+```
+
+Report the coefficients (beta) from optimization and compare to the true value. Note that
+the optimization is set at tolerance = 1, alpha = 0.1 and cap the maximum iterations at 1,000 times
+
+```{r 3.5 report}
+compare <- c(0.5, 1.2, -0.9, 0.1)
+compare <- cbind(compare, beta_new) 
+colnames(compare) <- c("true value", "optimization")
+row.names(compare) <- c("intercept", "x1", "x2", "x3")
+print(compare)
+```
+
+Note that the results are different from the face that the matrix Y used in estimation of the probit model is discrete choice not continuous variable.
+
+# Exercise 4   Discrete Choice
+
+## Optimize probit
+
+Write down the negative log-likelihood function for probit, then use non-linear minimization 
+pre-programmed package 
+
+``` {r 4.1 probit, warning = FALSE}
+# Set initial value for optimization
+beta <- c(0,0,0,0)
+
+# Create negative log-liklihood function for probit
+  ## Follows the same logic as in ex 3 but in this case the negative ll
+probit_nll <- function (beta, X = mx, Y = mydum) {
+  xb <- X %*% beta
+  p <- pnorm(xb)
+  -sum((1 - Y) * log(1 - p) + Y * log(p))
+  }
+
+# Use pre-programmed optimization package "nlm"
+probit_result <- nlm(probit_nll, beta)
+
+# Report result
+print(probit_result)
+```
+
+## Optimize logit
+
+Write down the negative log-likelihood function for logit, then use non-linear minimization 
+pre-programmed package 
+
+``` {r 4.2 logit, warning = FALSE}
+
+# Create negative log-liklihood function for logit
+logit_nll <- function(beta, X = mx, Y = mydum) {
+  
+  # predictor for xb (at initial value)
+  xb <- X %*% beta
+  
+  # calculate logistic CDF
+  p <- plogis(xb)
+  
+  # derive negative log-likelihood function
+  -sum((1 - Y) * log(1 - p) + Y * log(p))
+}
+
+# Use pre-programmed optimization package "nlm"
+logit_result <- nlm(logit_nll, beta)
+
+# Report result
+print(logit_result)
+```
+
+## Linear Probability Model
+
+Calculate linear probability model using OLS
+
+``` {r 4.4 LPM, warning = FALSE}
+
+# Using OLS formula
+lpm_result <- solve(t(mx)%*%mx)%*%t(mx)%*%mydum
+
+# Report result
+print(lpm_result)
+
+```
+
+## Compare the estimates among the three model
+
+In this sub-task, function glm and lm is utilized to obtain accurate standard errors.
+
+``` {r 4.5 compare, warning = FALSE}
+
+# Estimate three models above using "lm" and "glm"
+probit <- glm(ydum ~ x1+x2+x3, family = binomial(link='probit'))
+logit  <- glm(ydum ~ x1+x2+x3, family = binomial(link='logit'))
+lpm    <- lm(ydum ~ x1+x2+x3)
+```
+
+Report table 
+
+``` {r 4.6 }
+
+all_result <- probit$coefficients
+
+all_result <- rbind(all_result, sqrt(diag(vcov(probit))), logit$coefficients,
+                    sqrt(diag(vcov(logit))), lpm$coefficients, sqrt(diag(vcov(lpm))))
+
+row.names(all_result) <- c("Coef.-Probit", "Se.-Probit", "Coef.-Logit",
+                           "Se.-Logit" ,"Coef.-LPM", "Se.-LPM")
+
+print(all_result)
+```
+Note that for the coefficients, they have the same sign for all of the models, that is, negative for the x2, otherwise, positive. At this level of analysis, we cannot directly conclude the megitude of the relationship. All we can say is that, for the independent variables that have positive corresponding coefficient, an increase in x1 or x3 associates with an increase in probability that ydum = 1. On the other hand, for x2, a decrease in x2 associates with an increase in probability that ydum = 1.
+Considering their standard errors, the coefficients are all statistically significant except for x3 for all of the models, as seen from relatively high point estimates comparing to their corresponding standard errors.
+
+
+# Exercise 5    Marginal Effects
+
+### Marginal Effect for probit
+
+Using probit result in ex 4 to estimate marginal effects
+``` {r 5.1 marginal probit}
+probit_coeff <- as.matrix(probit$coefficients)
+
+# Calculate the mean of f'(xb)
+probit_fprime <- mean(dnorm(mx %*% probit_coeff))
+
+# Calculate marginal effects b*mean(f'(xb))
+probit_mfx <- probit_coeff*probit_fprime
+
+# Report result
+colnames(probit_mfx) <- c("Marginal Effects for Probit Model")
+print(probit_mfx)
+```
+
+### Marginal Effect for logit
+
+Using logit result in ex 4 to estimate marginal effects
+``` {r 5.2 marginal logit}
+# Calculate the mean of f'(xb)
+logit_coeff <- as.matrix(logit$coefficients)
+
+# Calculate marginal effects b*mean(f'(xb))
+logit_fprime <- mean(exp(-(mx %*% logit_coeff))/((exp(-(mx %*% logit_coeff)) + 1)^2))
+
+# Calculate marginal effects b*mean(f'(xb))
+logit_mfx <- logit_coeff*logit_fprime
+
+# Report result
+colnames(logit_mfx) <- c("Marginal Effects for Logit Model")
+print(logit_mfx)
+```
+
+## Compute the standard deviation
+
+### Delta Method
+
+Writing function computing Jacobian and Variance-covariance matrix
+``` {r 5.3 marginal logit}
+
+# Compute matrix inverse(X'X)
+inv_xx <- solve(t(X) %*% X)
+
+# Derive pdf of each model (first-order derivate)
+probit_pdf <- t(as.matrix(dnorm(mx %*% probit$coefficients)))
+logit_pdf  <- t(as.matrix(exp(-(mx %*% logit$coefficients)/
+              ((exp(-(mx %*% logit$coefficients)) + 1)^2))))
+
+# Write mfxse function to calculate asymptotic variance using delta method
+                  
+mfxse <- function(pdf, X, model) {
+  
+  # Compute Jacobian matrix
+  jac <- (1/nrow(X)) * (pdf %*% X)
+  
+  # Obtain model variance covariance matrix
+  varcov <- vcov(model)
+  
+  # delta method asy.var = JVJ'
+  avar <- jac %*% varcov %*% t(jac)
+  
+  # extract variance for each marginal effect
+  se <- c(avar*inv_xx[1,1], avar*inv_xx[2,2], avar*inv_xx[3,3], avar*inv_xx[4,4])
+  se <- sqrt(se)
+  return(se)
+}           
+```
+
+### SE for marginal effects of probit from delta method
+
+``` {r 5.4}
+probit_se_delta <- mfxse(probit_pdf, mx, probit)
+
+print(probit_se_delta)
+```
+
+*The standard error of marginal effect is for intercept, x1, x2 and x3 respectively.
+
+### SE for marginal effects of logit from delta method
+
+``` {r 5.5}
+logit_se_delta <- mfxse(logit_pdf, mx, logit)
+
+print(logit_se_delta)
+```
+
+*The standard error of marginal effect is for intercept, x1, x2 and x3 respectively.
+
+## Bootstrap Method
+
+```{r 5.6 bootstrap}
+
+# Create default bootstrap matrix
+boot_mfxmat <- matrix(nrow = 1, ncol = 4)
+
+dat <- data.frame(ydum, x1 , x2, x3)
+
+```
+
+### Bootstrap for standard error of mfx in probit
+``` {r 5.7 probit boot, warning=FALSE}
+
+# Estimate mfx for 49 times
+for (i in 1:49) {
+  boot_sample <- dat[sample(nrow(dat), replace = TRUE), ]  
+  boot_est    <- glm(ydum ~ ., data = boot_sample, family = binomial(link='probit'))
+  boot_coeff  <- as.matrix(coef(summary(boot_est))[, "Estimate"])
+  boot_pdf    <- mean(dnorm(mx %*% boot_coeff))
+  boot_mfx    <- boot_coeff * boot_pdf 
+  boot_mfxmat <- rbind(boot_mfxmat, t(boot_mfx))
+}
+
+  boot_mfxmat <- boot_mfxmat[-1, ]
+  boot_mfxmatse <- c(sd(boot_mfxmat[ , 1]), sd(boot_mfxmat[ , 2]), 
+                     sd(boot_mfxmat[ , 3]), sd(boot_mfxmat[ , 4]))
+  
+  
+  print(boot_mfxmatse)  
+  
+```
+
+*The standard error of marginal effect is for intercept, x1, x2 and x3 respectively.
+
+
+### Bootstrap for standard error of mfx in logit
+``` {r 5.8 logit boot, warning=FALSE}
+
+# Estimate mfx for 49 times
+for (i in 1:49) {
+  boot_sample <- dat[sample(nrow(dat), replace = TRUE), ]  
+  boot_est    <- glm(ydum ~ ., data = boot_sample, family = binomial(link='logit'))
+  boot_coeff  <- as.matrix(coef(summary(boot_est))[, "Estimate"])
+  boot_pdf    <- mean(dlogis(mx %*% boot_coeff))
+  boot_mfx    <- boot_coeff * boot_pdf 
+  boot_mfxmat <- rbind(boot_mfxmat, t(boot_mfx))
+}
+  boot_mfxmat <- boot_mfxmat[-1, ]
+  boot_mfxmatse <- c(sd(boot_mfxmat[ , 1]), sd(boot_mfxmat[ , 2]), 
+                     sd(boot_mfxmat[ , 3]), sd(boot_mfxmat[ , 4]))
+  print(boot_mfxmatse)  
+  
+```  
+
+*The standard error of marginal effect is for intercept, x1, x2 and x3 respectively.
